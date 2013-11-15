@@ -10,7 +10,9 @@ else
 #	KERNEL_SOURCE := /home/admin/Desktop/linux-3.7.1
 	PWD := $(shell pwd)
 
-default:
+default: module led_ctl
+
+module:
 	${MAKE} -C ${KERNEL_SOURCE} SUBDIRS=${PWD} modules
 
 clean:

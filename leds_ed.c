@@ -7,9 +7,11 @@
 #include <linux/device.h>
 #include <linux/errno.h> /* error codes */
 #include <linux/cdev.h>
+#include <linux/delay.h>
 #include <asm/system.h> /* cli(), *_flags */
 #include <asm/uaccess.h> /* copy_from/to_user */
 #include <asm/io.h> /* copy_from/to_user */
+#include "leds_ed.h" /* copy_from/to_user */
 
 #define HW_REGS_BASE ( 0xfc000000 )
 #define HW_REGS_SPAN ( 0x04000000 )
@@ -33,7 +35,73 @@ static void __iomem *leds;
 static dev_t first; // Global variable for the first device number 
 static struct cdev c_dev; // Global variable for the character device structure
 static struct class *cl; // Global variable for the device class
-unsigned char c;
+unsigned char leds_set = 0;
+
+static void write_to_leds(void);
+
+static void write_to_leds(void)
+{
+      iowrite32((leds_set << 6*4), ( leds + ( ( u32 )( GPIO1_DATA_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ));
+}
+
+static long my_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
+{
+    leds_arg_t l;
+ 
+    switch (cmd)
+    {
+        case READ_LEDS:
+            l.leds_set = leds_set;
+            if (copy_to_user((leds_arg_t *)arg, &l, sizeof(leds_arg_t)))
+            {
+                return -EACCES;
+            }
+            break;
+        case OFF_LEDS:
+            leds_set = 0;
+      	    write_to_leds();
+            break;
+        case ON_LEDS:
+	    leds_set = 0xF;
+      	    write_to_leds();
+            break;
+        case BLINK_LEDS:
+	    leds_set = 0;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0x1;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0x2;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0x4;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0x8;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0xF;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0;
+      	    write_to_leds();
+            break;
+        case SET_LEDS:
+            if (copy_from_user(&l, (leds_arg_t *)arg, sizeof(leds_arg_t)))
+            {
+                return -EACCES;
+            }
+            leds_set = l.leds_set;
+      	    write_to_leds();
+            break;
+        default:
+            return -EINVAL;
+    }
+ 
+    return 0;
+}
+
 
 static int my_open(struct inode *i, struct file *f)
 {
@@ -51,7 +119,7 @@ static ssize_t my_read(struct file *f, char __user *buf, size_t
   len, loff_t *off)
 {
   printk(KERN_INFO "Eddy LED Driver: read()\n");
-  if (copy_to_user(buf, &c, 1) != 0)
+  if (copy_to_user(buf, &leds_set, 1) != 0)
       return -EFAULT;
 
   if (*off == 0) { 
@@ -66,13 +134,14 @@ static ssize_t my_write(struct file *f, const char __user *buf,
   size_t len, loff_t *off)
 {
   printk(KERN_INFO "Eddy LED Driver: write()\n");
-  if (copy_from_user(&c,(buf + len - 1),1) != 0)
+  if (copy_from_user(&leds_set, (buf + len - 1),1) != 0)
       return -EFAULT;
   else
       /* Turn on all LEDs  */
-      iowrite32((c << 6*4), ( leds + ( ( u32 )( GPIO1_DATA_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ));
+      write_to_leds();
       return 1;
 }
+
 
 static struct file_operations leds_fops =
 {
@@ -80,7 +149,8 @@ static struct file_operations leds_fops =
   .open = my_open,
   .release = my_close,
   .read = my_read,
-  .write = my_write
+  .write = my_write,
+  .unlocked_ioctl = my_ioctl
 };
  
 static int __init leds_ed_init(void) /* Constructor */
