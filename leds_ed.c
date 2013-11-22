@@ -38,19 +38,27 @@
 
 static void *leds_reg; 
 static void *hps_reg; 
-static void *fpga_offset; 
 static dev_t first; // Global variable for the first device number 
 static struct cdev c_dev; // Global variable for the character device structure
 static struct class *cl; // Global variable for the device class
 unsigned int leds_set = 0;
 
+static void write_to_fpga(char val)
+{
+	printk(KERN_INFO "Eddy LED Driver: writing %x to address %p\n", val, leds_reg );
+	iowrite32(( val ), leds_reg );
+}
+
+static void write_to_hps(char val)
+{
+	printk(KERN_INFO "Eddy LED Driver: writing %x to address %p\n", val, hps_reg );
+	iowrite32( (val << (6*4-4)), ( hps_reg + ( ( u32 )( ALT_GPIO_SWPORTA_DR_OFST ) & ( u32 )( HW_REGS_MASK ) ) ) );
+}
+
 static void write_to_leds(void)
 {
-//  printk(KERN_INFO "Eddy LED Driver: writing %x to address %p\n", leds_set, (( ( u32 )( LED_PIO_BASE + fpga_offset ) & ( u32 )( HW_REGS_MASK ))) );
-	printk(KERN_INFO "Eddy LED Driver: writing %x to address %p\n", leds_set, leds_reg );
-//      iowrite32((leds_set << 6*4), ( leds_reg + ( ( u32 )( GPIO1_DATA_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ));
-//      iowrite32((leds_set ), ( leds_reg + ( ( u32 )( LED_PIO_BASE + fpga_offset ) & ( u32 )( HW_REGS_MASK ) ) ));
-	iowrite32(( leds_set ), leds_reg );
+	write_to_hps(leds_set & 0xF0);
+	write_to_fpga(leds_set & 0x0F);
 }
 
 static long my_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
@@ -88,6 +96,18 @@ static long my_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
       	    write_to_leds();
 	    msleep(500);
 	    leds_set = 0x8;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0x10;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0x20;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0x40;
+      	    write_to_leds();
+	    msleep(500);
+	    leds_set = 0x80;
       	    write_to_leds();
 	    msleep(500);
 	    leds_set = 0xFF;
@@ -363,7 +383,7 @@ static int __init leds_ed_init(void)
   }
   /* Set GPIO direction to output */
 //  iowrite32( BIT_LED_ALL, ( hps_reg + ( ( u32 )( GPIO1_DIR_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ) );
-//  iowrite32( BIT_LED_ALL, ( hps_reg + ( ( u32 )( ALT_GPIO_SWPORTA_DDR_OFST ) & ( u32 )( HW_REGS_MASK ) ) ) );
+  iowrite32( BIT_LED_ALL, ( hps_reg + ( ( u32 )( ALT_GPIO_SWPORTA_DDR_OFST ) & ( u32 )( HW_REGS_MASK ) ) ) );
  
   return 0;
 }
@@ -380,20 +400,6 @@ static void __exit leds_ed_exit(void)
   printk(KERN_INFO "Eddy LED Driver: unregistered\n");
 }
 
-
-/*module_platform_driver(altr_gpio_driver);*/
-/*
-static int __init altr_gpio_init(void)
-{
-	return platform_driver_register(&altr_gpio_driver);
-}
-subsys_initcall(altr_gpio_init);
-
-static void __exit altr_gpio_exit(void)
-{
-	platform_driver_unregister(&altr_gpio_driver);
-}
-module_exit(altr_gpio_exit);*/
 
 module_init(leds_ed_init);
 module_exit(leds_ed_exit);
