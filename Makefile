@@ -6,7 +6,7 @@ ifneq (${KERNELRELEASE},)
 
 else
 #	KERNEL_SOURCE := /usr/src/kernels/2.6.18-371.1.2.el5-x86_64
-	KERNEL_SOURCE := /home/admin/Desktop/linux
+	KERNEL_SOURCE := /home/admin/Desktop/linux-altera-3.7
 #	KERNEL_SOURCE := /home/admin/Desktop/linux-3.7.1
 	PWD := $(shell pwd)
 

@@ -13,7 +13,9 @@
 #include <asm/io.h> /* copy_from/to_user */
 #include <linux/platform_device.h>
 #include <linux/of.h>
-#include "leds_ed.h" /* copy_from/to_user */
+#include <linux/of_device.h>  /* of_match_device */
+#include <linux/of_address.h> /* of_iomap */
+#include "leds_ed.h"
 
 #define HW_REGS_BASE ( 0xfc000000 )
 #define HW_REGS_SPAN ( 0x04000000 )
@@ -25,6 +27,7 @@
 
 #define GPIO1_DIR_REGISTER  (ALT_GPIO1_OFST + ALT_GPIO_SWPORTA_DDR_OFST)
 #define GPIO1_DATA_REGISTER (ALT_GPIO1_OFST + ALT_GPIO_SWPORTA_DR_OFST)
+#define LED_PIO_BASE	    ( 0x10040 )
 
 #define BIT_LED_0   (0x01000000)
 #define BIT_LED_1   (0x02000000)
@@ -34,16 +37,20 @@
 #define BIT_LED_ALL  (BIT_LED_0 | BIT_LED_1 | BIT_LED_2 | BIT_LED_3)
 
 static void *leds_reg; 
+static void *hps_reg; 
+static void *fpga_offset; 
 static dev_t first; // Global variable for the first device number 
 static struct cdev c_dev; // Global variable for the character device structure
 static struct class *cl; // Global variable for the device class
-unsigned char leds_set = 0;
-
-static void write_to_leds(void);
+unsigned int leds_set = 0;
 
 static void write_to_leds(void)
 {
-      iowrite32((leds_set << 6*4), ( leds_reg + ( ( u32 )( GPIO1_DATA_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ));
+//  printk(KERN_INFO "Eddy LED Driver: writing %x to address %p\n", leds_set, (( ( u32 )( LED_PIO_BASE + fpga_offset ) & ( u32 )( HW_REGS_MASK ))) );
+	printk(KERN_INFO "Eddy LED Driver: writing %x to address %p\n", leds_set, leds_reg );
+//      iowrite32((leds_set << 6*4), ( leds_reg + ( ( u32 )( GPIO1_DATA_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ));
+//      iowrite32((leds_set ), ( leds_reg + ( ( u32 )( LED_PIO_BASE + fpga_offset ) & ( u32 )( HW_REGS_MASK ) ) ));
+	iowrite32(( leds_set ), leds_reg );
 }
 
 static long my_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
@@ -64,8 +71,8 @@ static long my_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
       	    write_to_leds();
             break;
         case ON_LEDS:
-	    leds_set = 0xF;
-      	    write_to_leds();
+	    leds_set = 0xFF;
+	    write_to_leds();
             break;
         case BLINK_LEDS:
 	    leds_set = 0;
@@ -83,7 +90,7 @@ static long my_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	    leds_set = 0x8;
       	    write_to_leds();
 	    msleep(500);
-	    leds_set = 0xF;
+	    leds_set = 0xFF;
       	    write_to_leds();
 	    msleep(500);
 	    leds_set = 0;
@@ -153,12 +160,63 @@ static struct file_operations leds_fops =
   .write = my_write,
   .unlocked_ioctl = my_ioctl
 };
- 
-static int altr_gpio_probe(struct platform_device *pdev)
+
+static struct of_device_id hps_gpio_of_match[] = {
+	{ .compatible = "snps,dw-gpio-1.0", "snps,dw-gpio",},
+	{},
+};
+MODULE_DEVICE_TABLE(of, hps_gpio_of_match);
+
+static int hps_gpio_probe(struct platform_device *op)
 {
         int err;
-        struct resource *iomem;
+        struct resource res;
+	const struct of_device_id *match;
 
+	match = of_match_device(hps_gpio_of_match, &op->dev);
+	if (!match)
+		return -EINVAL;
+
+	err = of_address_to_resource(op->dev.of_node, 0, &res);
+	if (err) {
+		err = -EINVAL;
+                goto err_mem;
+	}
+	if (!request_mem_region(res.start, resource_size(&res), "EddyLEDHps")) {
+		err = -EBUSY;
+                goto err_mem;
+	}
+
+	hps_reg = of_iomap(op->dev.of_node, 0);
+	if (!hps_reg) {
+                err = -ENOMEM;
+                goto err_ioremap;
+	}
+	
+  	printk(KERN_INFO "Eddy HPS LED Driver: io remapped to %x with size %x\n", res.start, resource_size(&res));
+	return 0;
+
+err_ioremap:
+        release_mem_region(res.start, resource_size(&res));
+err_mem:
+        printk(KERN_ERR ":HPS Failed to register GPIOs: %d\n", err);
+
+        return err;
+}
+ 
+static struct of_device_id altr_gpio_of_match[] = {
+//	{ .compatible = "snps,dw-gpio-1.0", "snps,dw-gpio",},
+	{ .compatible = "ALTR,pio-1.0","altr,pio-1.0", },
+	{},
+};
+MODULE_DEVICE_TABLE(of, altr_gpio_of_match);
+
+static int altr_gpio_probe(struct platform_device *op)
+{
+        int err;
+        struct resource res;
+	const struct of_device_id *match;
+/*
   printk(KERN_INFO "Eddy LED Driver: getting resource \n");
         iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
         if (!iomem) {
@@ -179,45 +237,40 @@ static int altr_gpio_probe(struct platform_device *pdev)
                 err = -ENOMEM;
                 goto err_ioremap;
         }
-  printk(KERN_INFO "Eddy LED Driver: io remaped\n");
+  printk(KERN_INFO "Eddy LED Driver: io remapped to %x with size %x\n", iomem->start, resource_size(iomem));
 
         return 0;
-/*
-  if (alloc_chrdev_region(&first, 0, 1, "EddyLED") < 0)
-  {
-    return -1;
-  }
-  
-  if ((cl = class_create(THIS_MODULE, "chardrv")) == NULL)
-  {
-    unregister_chrdev_region(first, 1);
-    return -1;
-  }
-
-  if (device_create(cl, NULL, first, NULL, "EddyLED") == NULL)
-  {
-    class_destroy(cl);
-    unregister_chrdev_region(first, 1);
-    return -1;
-  }
-  
-  cdev_init(&c_dev, &leds_fops);
-  if (cdev_add(&c_dev, first, 1) == -1)
-  {
-    device_destroy(cl, first);
-    class_destroy(cl);
-    unregister_chrdev_region(first, 1);
-    return -1;
-  }
-  printk(KERN_INFO "Eddy LED Driver: getting ready to write dir\n");
-
-  iowrite32( BIT_LED_ALL, ( leds_reg + ( ( u32 )( GPIO1_DIR_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ) );
-  printk(KERN_INFO "Eddy LED Driver: wrote output\n");
-
-  return 0;
 */
+
+
+	match = of_match_device(altr_gpio_of_match, &op->dev);
+	if (!match)
+		return -EINVAL;
+
+	err = of_address_to_resource(op->dev.of_node, 0, &res);
+	if (err) {
+		err = -EINVAL;
+                goto err_mem;
+	}
+	if (!request_mem_region(res.start, resource_size(&res), "EddyLED")) {
+//	if (!request_mem_region(res.start, 0x00200000, "EddyLED")) {
+		err = -EBUSY;
+                goto err_mem;
+	}
+
+	leds_reg = of_iomap(op->dev.of_node, 0);
+	if (!leds_reg) {
+                err = -ENOMEM;
+                goto err_ioremap;
+	}
+	
+  	printk(KERN_INFO "Eddy LED Driver: io remapped to %x with size %x\n", res.start, resource_size(&res));
+	return 0;
+
+
 err_ioremap:
-        release_mem_region(iomem->start, resource_size(iomem));
+//        release_mem_region(iomem->start, resource_size(iomem));
+        release_mem_region(res.start, resource_size(&res));
 err_mem:
         printk(KERN_ERR ": Failed to register GPIOs: %d\n", err);
 
@@ -227,25 +280,30 @@ err_mem:
 static int altr_gpio_remove(struct platform_device *pdev)
 {
         struct resource *iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-  device_destroy(cl, first);
-  class_destroy(cl);
-  unregister_chrdev_region(first, 1);
+	device_destroy(cl, first);
+	class_destroy(cl);
+	unregister_chrdev_region(first, 1);
         iounmap(leds_reg);
         release_mem_region(iomem->start, resource_size(iomem));
 
         return 0;
 }
 
-static struct of_device_id altr_gpio_of_match[] = {
-	{ .compatible = "snps,dw-gpio-1.0", "snps,dw-gpio", "altr,pio-1.0",},
-	{},
-};
 
-MODULE_DEVICE_TABLE(of, altr_gpio_of_match);
+static struct platform_driver hps_gpio_driver = {
+	.driver = {
+		.name	= "dw-gpio",
+		.owner	= THIS_MODULE,
+		.of_match_table = of_match_ptr(hps_gpio_of_match),
+	},
+	.probe		= hps_gpio_probe,
+	.remove		= altr_gpio_remove,
+};
 
 static struct platform_driver altr_gpio_driver = {
 	.driver = {
-		.name	= "gpio",
+//		.name	= "dw-gpio",
+		.name	= "pio-1.0",
 		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(altr_gpio_of_match),
 	},
@@ -256,13 +314,19 @@ static struct platform_driver altr_gpio_driver = {
 static int __init leds_ed_init(void) 
 {
   printk(KERN_INFO "Eddy LED Driver: registered\n");
-/*
+///*
   if (platform_driver_register(&altr_gpio_driver)< 0)
   {
     return -1;
   }
-*/
+//*/
 ///*
+  if (platform_driver_register(&hps_gpio_driver)< 0)
+  {
+    return -1;
+  }
+//*/
+/*
   printk(KERN_INFO "Eddy LED Driver: registered2\n");
  
   if ((leds_reg = ioremap(HW_REGS_BASE, HW_REGS_SPAN)) == NULL)
@@ -270,8 +334,7 @@ static int __init leds_ed_init(void)
     printk(KERN_ERR "Mapping LED failed\n");
     return -1;
   }
-//*/
-
+*/
   if (alloc_chrdev_region(&first, 0, 1, "EddyLED") < 0)
   {
     return -1;
@@ -286,7 +349,6 @@ static int __init leds_ed_init(void)
   if (device_create(cl, NULL, first, NULL, "EddyLED") == NULL)
   {
     class_destroy(cl);
-  printk(KERN_INFO "Eddy LED Driver: got resource \n");
     unregister_chrdev_region(first, 1);
     return -1;
   }
@@ -299,11 +361,10 @@ static int __init leds_ed_init(void)
     unregister_chrdev_region(first, 1);
     return -1;
   }
-  printk(KERN_INFO "Eddy LED Driver: getting ready to write direction\n");
   /* Set GPIO direction to output */
-  iowrite32( BIT_LED_ALL, ( leds_reg + ( ( u32 )( GPIO1_DIR_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ) );
-  printk(KERN_INFO "Eddy LED Driver: wrote output\n");
-
+//  iowrite32( BIT_LED_ALL, ( hps_reg + ( ( u32 )( GPIO1_DIR_REGISTER ) & ( u32 )( HW_REGS_MASK ) ) ) );
+//  iowrite32( BIT_LED_ALL, ( hps_reg + ( ( u32 )( ALT_GPIO_SWPORTA_DDR_OFST ) & ( u32 )( HW_REGS_MASK ) ) ) );
+ 
   return 0;
 }
  
